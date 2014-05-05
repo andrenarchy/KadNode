@@ -17,6 +17,8 @@
 #include "ext-auth.h"
 
 
+/* Key prefix - indicates crypto algorithm */
+#define KEY_PREFIX "ed25519_"
 /* Maximum packets to process per second */
 #define MAX_AUTH_REQUESTS 100
 /* Maximum retries to send the challenge per address */
@@ -56,8 +58,8 @@ int auth_generate_key_pair( void ) {
 	char skhexbuf[2*crypto_sign_SECRETKEYBYTES+1];
 
 	if( crypto_sign_keypair( pk, sk ) == 0) {
-		fprintf( stdout, "public key: %s\n", bytes_to_hex( pkhexbuf, pk, sizeof(pk) ) );
-		fprintf( stdout, "secret key: %s\n", bytes_to_hex( skhexbuf, sk, sizeof(sk) ) );
+		fprintf( stdout, "public key: "KEY_PREFIX"%s\n", bytes_to_hex( pkhexbuf, pk, sizeof(pk) ) );
+		fprintf( stdout, "secret key: "KEY_PREFIX"%s\n", bytes_to_hex( skhexbuf, sk, sizeof(sk) ) );
 		return 0;
 	} else {
 		fprintf( stderr, "Failed to generate keys." );
@@ -65,9 +67,15 @@ int auth_generate_key_pair( void ) {
 	}
 }
 
+/* Check for <prefix><public_key> pattern */
 int auth_is_pkey( const char str[] ) {
 	size_t size;
 
+	if( !is_prefix( str, KEY_PREFIX ) ) {
+		return 0;
+	}
+
+	str += strlen( KEY_PREFIX );
 	size = strlen( str );
 	if( size != 2*crypto_sign_PUBLICKEYBYTES ) {
 		return 0;
@@ -76,9 +84,15 @@ int auth_is_pkey( const char str[] ) {
 	return str_isHex( str, size );
 }
 
+/* Check for <prefix><secret_key> pattern */
 int auth_is_skey( const char str[] ) {
 	size_t size;
 
+	if( !is_prefix( str, KEY_PREFIX ) ) {
+		return 0;
+	}
+
+	str += strlen( KEY_PREFIX );
 	size = strlen( str );
 	if( size != 2*crypto_sign_SECRETKEYBYTES ) {
 		return 0;
@@ -171,26 +185,36 @@ void free_key( struct key_t *key ) {
 }
 
 /*
-* Parse "[<pattern>:]<hex-key>" from the command line.
+* Parse "[<pattern>:]<key-prefix><hex-key>" from the command line.
+* If no pattern was given, '*' is used.
 */
 int auth_parse_key( char pattern[], size_t patternsize, UCHAR key[], size_t keysize, const char arg[] ) {
 	const char* colon;
-	char hexkey[512];
+	const char* hexkey;
+	char keybuf[512];
 
 	/* Parse arg string into key string and pattern string */
 	colon = strchr( arg, ':' );
+
 	if( colon == NULL ) {
 		snprintf( pattern, patternsize, "%s", "*" );
-		snprintf( hexkey, sizeof(hexkey), "%s", arg );
+		snprintf( keybuf, sizeof(keybuf), "%s", arg );
 	} else {
 		snprintf( pattern, patternsize, "%.*s", (int) (colon - arg), arg );
-		snprintf( hexkey, sizeof(hexkey), "%s", colon + 1 );
+		snprintf( keybuf, sizeof(keybuf), "%s", colon + 1 );
 	}
 
-	/* Lower case query and cut off .p2p  */
+	/* Lower case query and cut off .p2p */
 	query_sanitize( pattern, patternsize, pattern );
 
-	/* Validate key string format */
+	if( is_prefix( keybuf, KEY_PREFIX ) ) {
+		hexkey = keybuf + strlen( KEY_PREFIX );
+	} else {
+		log_err( "AUTH: Unknown key format. Format prefix (e.g. '"KEY_PREFIX"') expected for key: %s", keybuf );
+		return 1;
+	}
+
+	/* Validate key format */
 	if( strlen( hexkey ) != 2*keysize ) {
 		log_err( "AUTH: Invalid key length. %d hex characters expected: %s", 2*keysize, hexkey );
 		return 1;
@@ -268,7 +292,7 @@ UCHAR *auth_handle_skey( UCHAR skey[], UCHAR id[], const char query[] ) {
 
 	if( auth_is_skey( query ) ) {
 		/* The query to announce is a secret key */
-		bytes_from_hex( skey, query, 2*crypto_sign_SECRETKEYBYTES );
+		bytes_from_hex( skey, query + strlen( KEY_PREFIX ), 2*crypto_sign_SECRETKEYBYTES );
 		auth_skey_to_pkey( skey, pkey );
 		bytes_to_hex( pkeyhex, pkey, crypto_sign_PUBLICKEYBYTES );
 
@@ -280,7 +304,7 @@ UCHAR *auth_handle_skey( UCHAR skey[], UCHAR id[], const char query[] ) {
 		bytes_to_hex( pkeyhex, pkey, crypto_sign_PUBLICKEYBYTES );
 
 		/* We use the public key as salt for the query */
-		char *str = malloc( strlen( pkeyhex ) + strlen( query ) +1 );
+		char *str = malloc( strlen( pkeyhex ) + strlen( query ) + 1 );
 		sprintf( str, "%s%s", pkeyhex, query );
 		id_compute( id, str );
 		free( str );
@@ -300,7 +324,7 @@ UCHAR *auth_handle_pkey( UCHAR pkey[], UCHAR id[], const char query[] ) {
 	char pkeyhex[2*crypto_sign_PUBLICKEYBYTES+1];
 
 	if( auth_is_pkey( query ) ) {
-		bytes_from_hex( pkey, query, 2*crypto_sign_PUBLICKEYBYTES );
+		bytes_from_hex( pkey, query + strlen( KEY_PREFIX ), 2*crypto_sign_PUBLICKEYBYTES );
 		id_compute( id, query );
 		return pkey;
 	} else if( auth_find_key( pkey, query, g_public_keys ) ) {

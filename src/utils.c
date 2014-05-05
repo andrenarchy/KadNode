@@ -20,6 +20,20 @@
 
 
 /* Also matches on equality */
+int is_prefix( const char str[], const char prefix[] ) {
+	size_t prefix_len;
+	size_t str_len;
+
+	prefix_len = strlen( prefix );
+	str_len = strlen( str );
+	if( prefix_len > str_len ) {
+		return 0;
+	} else {
+		return (memcmp( str, prefix, prefix_len ) == 0);
+	}
+}
+
+/* Also matches on equality */
 int is_suffix( const char str[], const char suffix[] ) {
 	size_t suffix_len;
 	size_t str_len;
